@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+     
+    <link rel="stylesheet" href="https://js.arcgis.com/4.20/esri/themes/light/main.css">
+    <script src="https://js.arcgis.com/4.20/"></script>
+  
+    <style type="text/css" media="screen">
+    html,     body {
+      padding: 0;
+      margin: 0;
+      height: 100%;
+      width: 100%;
+    }
+ 
+
+    #viewDiv {
+    position: absolute; 
+    padding: 0;
+    margin: 0;
+    height: 100%;
+    width: 100%;
+    }
+  
+
+    </style>
+
+    <title>Utility Network JS API Demo</title>
+
+   
+</head>
+<body>
+    <div id="viewDiv"></div>
+    <div id='divOutput' style = ' background-color: white;  position:absolute; top:93%; left:1%;'>...</div>
+    <table style = 'position:absolute; top:0; right:40%;'><tr>
+        <td> <button id = 'btnInfo' >Info</button> </td>
+        <td> <button id = 'btnStarting' >🕳️</button> </td>
+        <td> <select id = 'cmbTraceConfig'></select></td>
+        <td> <button id = 'btnTrace' >Trace</button> </td>
+        <td> <button id = 'btnViewAssociation' >View Associations</button> </td>
+        <td> <button id = 'btnClear' >Clear</button> </td>
+    </tr></table>
+ 
+    <script>
+        /* All Classes */
+        let     WebMap;
+        let     MapView;
+        let     UtilityNetwork;
+        let     Terminal;
+        let     identityManager;
+        let     QueryTask; 
+        let     Query;
+        let     Tracer;
+        let     TraceLocation;
+        let     TraceResult;
+        let     TraceParameters;
+        let     Feature;
+        let     Graphic;
+        let     GeometryEngineAsync;
+        let     Polyline;
+        let     Association;
+        let     SynthetizeAssociationGeometries;
+        let     SynthetizeAssociationGeometriesParameters;
+
+        /* Globals */
+        const CONNECTIVITY_ASSOCIATION_COLOR = [29, 235, 70, 0.4];
+        const ATTACHMENT_ASSOCIATION_COLOR = [200, 125, 91, 0.4];
+        const SELECTION_COLOR = [27, 227, 251, 0.4];
+        const SELECTION_COLOR_POINT = [227, 27, 251, 0.4];
+        const SELECTION_SIZE = 10;
+        const BARRIER_COLOR = [227, 27, 21, 0.6];
+        const STARTING_POINT_COLOR = [21, 244, 21, 0.6];
+        const SUPPORTED_LAYERS = ["Electric Line"] //This demo only shows how to add starting locations to lines, the API supports junctions and edges.
+        const STARTING_STATE = [{"icon":'🕳️', "color": SELECTION_COLOR, "startLocation": null},{ "icon": '➕', "color": STARTING_POINT_COLOR, "startLocation": "starting-point"},{"icon":'❌', "color": BARRIER_COLOR, "startLocation": "barrier"}]
+        
+        let activeTool = 0;
+        let webmap = null;
+        let view = null;
+        let utilityNetwork = null;
+        let GraphicClass = null;
+        let DEFAULT_SPATIAL_REFERENCE = null;
+        let mouseMoveEvent = null;
+        let lastMouseMove = null;
+        let lastMouseStarting = null;
+
+        /* Init controls */
+        const btnInfo = document.getElementById("btnInfo")
+        const btnStarting = document.getElementById("btnStarting")
+        const cmbTraceConfig = document.getElementById("cmbTraceConfig")        
+        const btnTrace = document.getElementById("btnTrace")
+        const btnViewAssociation = document.getElementById("btnViewAssociation")
+        const btnClear = document.getElementById("btnClear")
+        const divOutput =  document.getElementById("divOutput")
+
+        /* Control Events Setup */
+        btnViewAssociation.addEventListener("click", handler_ViewAssociations)        
+        btnInfo.addEventListener("click", handler_UtilityNetworkProperties)
+        btnStarting.addEventListener("click", handler_StartingLocation);
+        btnClear.addEventListener("click",  handler_ClearGraphics);
+        btnTrace.addEventListener("click", handler_Trace)
+        
+        //This function is called once the Javascript API is initiated. All classes can be accessed globally.
+        async function init(){ 
+            //a webmap with shared trace configuration
+            const webmapId = "aafe41463e32497ab56cbac0acf16339"
+            //The portal url
+            const portalUrl = "https://utilitynetwork.esri.com/portal"
+            
+            webmap = new WebMap({
+                        portalItem: {
+                            id: webmapId,
+                            portal: { url: portalUrl }
+                        }
+                    });
+            
+            view = new MapView({
+                    map: webmap,
+                    container: "viewDiv"
+                    });
+             
+            //load the view and any webmaps in it.
+            await view.when();
+            
+            //configure all layers to fetch these fields for caching purposes. Helpful in hittest to avoid roundtrip to the server
+            view.map.layers.forEach( l => l.outFields = ["assetgroup", "assettype", "globalid", "objectid"]);
+            
+            //get the first utility network object found in the webmap
+            utilityNetwork = webmap.utilityNetworks.getItemAt(0)
+            
+            //populate trace configs in the drop down, we can do this before loading the UN which could take a while.
+            //persist the globalId of the trace configuration in the drop down value so we can use it.
+            utilityNetwork.sharedNamedTraceConfigurations.forEach(tc=> {
+                const option = document.createElement("option")
+                option.textContent = tc.title;
+                option.value = tc.globalId; 
+                cmbTraceConfig.appendChild(option)
+            })
+            
+            //Fully load the utility network and its definition
+            await utilityNetwork.load();
+            
+            //set the default spatial reference for ease of use
+            DEFAULT_SPATIAL_REFERENCE = view.spatialReference
+
+             /* Setup view events */
+             //on mouse move , capture the x/y event
+            view.on("pointer-move", async event => mouseMoveEvent = event  )
+
+            //when the user clicks on the view execute the approperiate event 
+            //sets the starting point (green) or a barrier (red) when the correct tool is active
+            //the graphic added will be tagged with metadata that will identify if its barrier or starting location
+            view.on("click", handler_AddStartingLocation);
+
+        }
+         
+
+
+        /* Event Handlers */
+        //called when the view association button is clicked
+        async function handler_ViewAssociations(event) {
+
+            //view associations
+            const extent = view.extent;
+            const params = new SynthetizeAssociationGeometriesParameters({
+                "extent": extent,
+                "returnAttachmentAssociations": true,
+                "returnConnectivityAssociations": true,
+                "returnContainerAssociations": false,
+                "outSR": utilityNetwork.spatialReference,
+                "maxGeometryCount": 100
+            })
+
+            //View the associations within the extent
+            const result = await SynthetizeAssociationGeometries.synthesizeAssociationGeometries
+                                            (utilityNetwork.networkServiceUrl, params)
+
+            view.graphics.removeMany(view.graphics.filter(a=>a.name === "associations"))
+            view.graphics.addMany(result.associations.filter(a => a.associationType === "connectivity").map(g=>getGraphic("line", g.geometry, CONNECTIVITY_ASSOCIATION_COLOR, "associations" )));
+            view.graphics.addMany(result.associations.filter(a => a.associationType === "attachment").map(g=>getGraphic("line", g.geometry, ATTACHMENT_ASSOCIATION_COLOR , "associations")));
+            
+        }
+
+        //called when the trace button is clicked
+        async function handler_Trace(event) {
+            //build trace parameters (assume all lines for the demo)
+             
+            //Loop through all graphics that has been added and add the starting locations
+            const traceLocations = view.graphics.filter(g=>g.attributes).map( g=>   
+                     new TraceLocation.default (
+                            {   "type": g.startingLocationType,
+                                "globalId": g.attributes.globalid,
+                                "percentAlong": g.attributes.percentageAlong} ) 
+            )
+            
+            //get the selected trace configuration from the drop down (globalId)
+            const selectedTraceConfigurationGlobalId = cmbTraceConfig.options[cmbTraceConfig.selectedIndex].value;
+
+            //build the trace parameters, add the traceLocations and the named trace configuration from the drop down
+            const traceParameters = new TraceParameters (
+                                      { "traceLocations": Array.from(traceLocations),
+                                         "namedTraceConfigurationGlobalId":  selectedTraceConfigurationGlobalId } )
+            
+            //Execute the trace 
+            const traceResult = await Tracer.trace(utilityNetwork.networkServiceUrl, traceParameters);
+        
+            //Delete any existing trace results (we tag the trace result graphic as "TraceResult" so we can delete it easily)
+            //alternatively we could have used a graphic layer
+            const index = view.graphics.findIndex(g => g.name === "TraceResult")
+            if (index > -1) view.graphics.removeAt(index)     
+
+            //Add trace result (we tag the trace result graphic as "TraceResult" so we can delete it easily)
+            //only when aggregatedGeometries exist
+            if (traceResult.aggregatedGeometry) 
+                view.graphics.add(getGraphic("line", traceResult.aggregatedGeometry.line, SELECTION_COLOR, "TraceResult"));
+            
+            //if elements are returned just display the count
+            if (traceResult.elements)
+                divOutput.textContent = `${traceResult.elements.length} elements returned.`
+
+            //if functions are returned display their result
+            if (traceResult.globalFunctionResults && traceResult.globalFunctionResults.length > 0 && traceResult.globalFunctionResults[0])
+                divOutput.textContent += ` Total Length: ${traceResult.globalFunctionResults[0].result}`
+
+        }
+ 
+        //called when the starting location button is clicked to set the active tool (add starting points, barriers or idle)
+        async function handler_StartingLocation(event) {
+             //set the current activetool
+             event.currentTarget.textContent = STARTING_STATE[++activeTool % STARTING_STATE.length].icon;
+        }
+        
+        //called when the map is clicked to set a starting point or barrier
+        async function handler_AddStartingLocation(mapEvent) {
+            //if the tool is idle 🕳️, allow the normal identify to work
+            if (activeTool % STARTING_STATE.length === 0) return;
+                        
+            const startingPoint = STARTING_STATE[activeTool % STARTING_STATE.length];
+            const color = startingPoint.color
+            //stop propagating the event so we don't get the identify dialog
+            mapEvent.stopPropagation();
+                
+            //use the cache to run a hittest and retrieve any graphics within tolerance
+            const result = await view.hitTest(mapEvent);
+                
+            //filter the graphics to supported layers
+            //this demo only allow starting locations on lines.
+            const graphics = result.results
+            .filter(g=>g.graphic)
+            .filter(g=>g.graphic.attributes)
+            .filter(g=>g.graphic.attributes.objectid)
+            .filter(g=> SUPPORTED_LAYERS.find(s => s === g.graphic.layer.title))
+            .map (async g=> {
+                const percAlong = await getPercentageAlong(g.graphic.geometry, g.mapPoint,DEFAULT_SPATIAL_REFERENCE)
+                g.graphic.attributes.percentageAlong = percAlong;
+                
+                return g
+            })
+
+            let graphicResults = await Promise.all(graphics)
+            graphicResults= graphicResults.map(g => getGraphic("point", g.mapPoint, color, g.graphic.attributes.globalid, g.graphic.attributes, g.graphic.layer.layerId, startingPoint.startLocation));
+            
+            view.graphics.addMany(graphicResults)
+        }
+
+        //Called when Clear button is clicked, clear all graphics and reset the UI state.
+        async function handler_ClearGraphics (event) {
+              activeTool = 0;
+              btnStarting.textContent = STARTING_STATE[activeTool].icon; view.graphics=[];
+              divOutput.textContent=""
+        }
+
+
+
+        //called when the Info button is clicked
+        async function handler_UtilityNetworkProperties(event) {
+            const info = `id: ${utilityNetwork.id}\nname: ${utilityNetwork.datasetName}\nlayerId: ${utilityNetwork.layerId}`
+            alert(info)
+        }
+        
+        
+        //Initial setup of Esri Javascript API
+        require([
+            "esri/WebMap",
+            "esri/views/MapView",
+            "esri/networks/UtilityNetwork",
+            "esri/networks/support/Terminal",
+            "esri/identity/IdentityManager",
+            "esri/tasks/QueryTask",
+            "esri/tasks/support/Query",
+            "esri/rest/networks/trace",
+            "esri/rest/networks/support/TraceLocation",
+            "esri/rest/networks/support/TraceResult",
+            "esri/rest/networks/support/TraceParameters",
+            "esri/widgets/Feature",
+            "esri/Graphic",
+            "esri/geometry/geometryEngineAsync",
+            "esri/geometry/Polyline",
+            "esri/geometry/projection",
+            "esri/rest/networks/support/Association",
+            "esri/rest/networks/synthesizeAssociationGeometries",
+            "esri/rest/networks/support/SynthesizeAssociationGeometriesParameters"
+    
+        ],     function(
+            WebMapClass,
+            MapViewClass,
+            UtilityNetworkClass,
+            TerminalClass,
+            identityManagerClass,
+            QueryTaskClass, 
+            QueryClass,
+            TracerClass,
+            TraceLocationClass,
+            TraceResultClass,
+            TraceParametersClass,
+            FeatureClass,
+            GraphicClass,
+            geometryEngineAsyncClass,
+            PolylineClass,
+            ProjectionClass,
+            AssociationClass,
+            SynthetizeAssociationGeometriesClass,
+            SynthetizeAssociationGeometriesParametersClass
+        ) {
+            WebMap = WebMapClass;
+            MapView = MapViewClass;
+            UtilityNetwork = UtilityNetworkClass;
+            Terminal = TerminalClass;
+            identityManager = identityManagerClass;
+            QueryTask = QueryTaskClass;
+            Query = QueryClass;
+            Tracer = TracerClass;
+            TraceLocation = TraceLocationClass;
+            TraceResult = TraceResultClass;
+            TraceParameters = TraceParametersClass;
+            Feature = FeatureClass;
+            Graphic = GraphicClass;
+            GeometryEngineAsync=geometryEngineAsyncClass
+            Polyline = PolylineClass;
+            Projection = ProjectionClass;
+            Association = AssociationClass;
+            SynthetizeAssociationGeometries = SynthetizeAssociationGeometriesClass;
+            SynthetizeAssociationGeometriesParameters = SynthetizeAssociationGeometriesParametersClass;
+            init()
+        }
+        );
+        
+    
+    /* Helper functions */
+    // calculate the percentage along the line (sourceGeom) given a point feature (flagGeom)
+    async function getPercentageAlong(sourceGeom, flagGeom, inSR) {
+        let flagLine = flagGeom;
+        const sourceLine = await this.createPolyline(sourceGeom.paths, inSR.wkid);
+         
+        const padFlagXMin = flagGeom.x - 50;
+        const padFlagXMax = flagGeom.x + 50;
+        const padFlagYMin = flagGeom.y - 50;
+        const padFlagYMax = flagGeom.y + 50;
+        const newCoodsForLine = [
+                [padFlagXMin,padFlagYMin],
+                [padFlagXMax,padFlagYMax]
+            ];
+        flagLine = await createPolyline(newCoodsForLine, flagGeom.spatialReference.wkid);
+        if(!Projection.isLoaded())  await Projection.load();
+       
+        const projGeom = Projection.project(flagLine, inSR);
+        flagLine = projGeom;
+        const newGeom = await GeometryEngineAsync.cut(sourceLine,flagLine);
+        if(newGeom.length > 0) {
+            const sourceLength = await GeometryEngineAsync.planarLength(sourceLine,'feet');
+            let piece1Length;
+            if (newGeom[0].paths[0][0][0] == sourceLine.paths[0][0][0] && newGeom[0].paths[0][0][1] == sourceLine.paths[0][0][1])
+                piece1Length = await GeometryEngineAsync.planarLength(newGeom[0],'feet');
+            else
+                piece1Length = await GeometryEngineAsync.planarLength(newGeom[1],'feet');
+
+            const percentage = piece1Length / sourceLength;
+            return(percentage);
+        } 
+        else {
+            return(0.5);
+           }
+      
+        }
+ 
+
+        //create a polyline to use tor percentage along calculation
+        async function createPolyline(geom, inSR) {
+            
+            const newLine = new Polyline({
+            hasZ: false,
+            hasM: true,
+            paths: geom,
+            spatialReference: { wkid: inSR }
+            });
+            return(newLine);
+            //});
+        }
+
+        //create a graphic object
+        function getGraphic(type, geometry, color = SELECTION_COLOR, name, obj, layerId, startingLocationType) {
+    
+                            
+                let symbol;
+                let geometryObject;
+    
+                switch (type) {
+                    case "multipoint": 
+                            symbol = {
+                                type: "simple-marker", // autocasts as new SimpleMarkerSymbol()
+                                color: color,
+                                size: SELECTION_SIZE,
+                                outline: { // autocasts as new SimpleLineSymbol()
+                                    color: color,
+                                    width: 0
+                                }
+                            }
+    
+                        geometryObject = {
+                            type: "multipoint",
+                            points: geometry.points,
+                            spatialReference: DEFAULT_SPATIAL_REFERENCE
+                        }
+    
+                        break;
+    
+                    case "point": 
+                            symbol = {
+                                type: "simple-marker", // autocasts as new SimpleMarkerSymbol()
+                                color: color,
+                                size: SELECTION_SIZE,
+                                outline: { // autocasts as new SimpleLineSymbol()
+                                    color: color,
+                                    width: 0
+                                }
+                            }
+    
+                        geometryObject = {
+                            type: "point",
+                            x: geometry.x,
+                            y: geometry.y,
+                            spatialReference: DEFAULT_SPATIAL_REFERENCE
+                        }
+    
+                        break;
+                    case "line":
+    
+                        symbol = {
+                            type: "simple-line", // autocasts as SimpleLineSymbol()
+                            color: color,
+                            width: SELECTION_SIZE
+                        };
+    
+                        geometryObject = {
+                            type: "polyline",
+                            paths: geometry.paths,
+                            spatialReference: utilityNetwork.spatialReference
+                        }
+                        break;
+                    case "polygon":
+    
+                        symbol = {
+                            type: "simple-fill", // autocasts as new SimpleFillSymbol()
+                            color: color,
+                            outline: { // autocasts as new SimpleLineSymbol()
+                                color: color, //[255, 255, 255],
+                                width: SELECTION_SIZE
+                            }
+                        };
+    
+    
+                        geometryObject = {
+                            type: "polygon",
+                            rings: geometry.rings,
+                            spatialReference: DEFAULT_SPATIAL_REFERENCE
+                        }
+    
+                }
+    
+                return new Graphic({
+                    geometry: geometryObject,
+                    symbol: symbol,
+                    name: name,
+                    attributes: obj,
+                    layerId: layerId,
+                    startingLocationType:startingLocationType
+                });
+    
+    }
+     
+        </script>
+
+</body>
+</html>
