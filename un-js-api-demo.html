@@ -107,7 +107,7 @@
             //a webmap with shared trace configuration
             const webmapId = "aafe41463e32497ab56cbac0acf16339"
             //The portal url
-            const portalUrl = "https://utilitynetwork.esri.com/portal"
+            const portalUrl = "https://utilitynetwork27.esri.com/portal"
             
             webmap = new WebMap({
                         portalItem: {
@@ -189,7 +189,7 @@
              
             //Loop through all graphics that has been added and add the starting locations
             const traceLocations = view.graphics.filter(g=>g.attributes).map( g=>   
-                     new TraceLocation.default (
+                     new TraceLocation (
                             {   "type": g.startingLocationType,
                                 "globalId": g.attributes.globalid,
                                 "percentAlong": g.attributes.percentageAlong} ) 
