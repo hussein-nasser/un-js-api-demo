@@ -50,9 +50,7 @@
         let     MapView;
         let     UtilityNetwork;
         let     Terminal;
-        let     identityManager;
-        let     QueryTask; 
-        let     Query;
+        let     identityManager; 
         let     Tracer;
         let     TraceLocation;
         let     TraceResult;
@@ -73,9 +71,9 @@
         const SELECTION_SIZE = 10;
         const BARRIER_COLOR = [227, 27, 21, 0.6];
         const STARTING_POINT_COLOR = [21, 244, 21, 0.6];
-        const SUPPORTED_LAYERS = ["Electric Line"] //This demo only shows how to add starting locations to lines, the API supports junctions and edges.
         const STARTING_STATE = [{"icon":'🕳️', "color": SELECTION_COLOR, "startLocation": null},{ "icon": '➕', "color": STARTING_POINT_COLOR, "startLocation": "starting-point"},{"icon":'❌', "color": BARRIER_COLOR, "startLocation": "barrier"}]
         
+        let SUPPORTED_LAYERS = [];
         let activeTool = 0;
         let webmap = null;
         let view = null;
@@ -104,6 +102,10 @@
         
         //This function is called once the Javascript API is initiated. All classes can be accessed globally.
         async function init(){ 
+            try {
+
+
+            //This demo only works on line features, place a starting point/barrier on line features
             //a webmap with shared trace configuration
             const webmapId = "aafe41463e32497ab56cbac0acf16339"
             //The portal url
@@ -125,7 +127,12 @@
             await view.when();
             
             //configure all layers to fetch these fields for caching purposes. Helpful in hittest to avoid roundtrip to the server
-            view.map.layers.forEach( l => l.outFields = ["assetgroup", "assettype", "globalid", "objectid"]);
+            view.map.layers.forEach( l => {
+                
+                l.outFields = ["assetgroup", "assettype", "globalid", "objectid"]
+                if (l.geometryType === "polyline")
+                    SUPPORTED_LAYERS.push(l.title)
+            });
             
             //get the first utility network object found in the webmap
             utilityNetwork = webmap.utilityNetworks.getItemAt(0)
@@ -153,7 +160,11 @@
             //sets the starting point (green) or a barrier (red) when the correct tool is active
             //the graphic added will be tagged with metadata that will identify if its barrier or starting location
             view.on("click", handler_AddStartingLocation);
-
+            }
+            catch(ex)
+            {
+                console.error("Error during map init. " + ex.toString())
+            }
         }
          
 
@@ -191,7 +202,7 @@
             const traceLocations = view.graphics.filter(g=>g.attributes).map( g=>   
                      new TraceLocation (
                             {   "type": g.startingLocationType,
-                                "globalId": g.attributes.globalid,
+                                "globalId": getVal(g.attributes, "globalid"),
                                 "percentAlong": g.attributes.percentageAlong} ) 
             )
             
@@ -250,7 +261,7 @@
             const graphics = result.results
             .filter(g=>g.graphic)
             .filter(g=>g.graphic.attributes)
-            .filter(g=>g.graphic.attributes.objectid)
+            .filter(g=>getVal(g.graphic.attributes, "objectid")>0)
             .filter(g=> SUPPORTED_LAYERS.find(s => s === g.graphic.layer.title))
             .map (async g=> {
                 const percAlong = await getPercentageAlong(g.graphic.geometry, g.mapPoint,DEFAULT_SPATIAL_REFERENCE)
@@ -260,7 +271,7 @@
             })
 
             let graphicResults = await Promise.all(graphics)
-            graphicResults= graphicResults.map(g => getGraphic("point", g.mapPoint, color, g.graphic.attributes.globalid, g.graphic.attributes, g.graphic.layer.layerId, startingPoint.startLocation));
+            graphicResults= graphicResults.map(g => getGraphic("point", g.mapPoint, color, getVal(g.graphic.attributes, "globalid"), g.graphic.attributes, g.graphic.layer.layerId, startingPoint.startLocation));
             
             view.graphics.addMany(graphicResults)
         }
@@ -288,8 +299,6 @@
             "esri/networks/UtilityNetwork",
             "esri/networks/support/Terminal",
             "esri/identity/IdentityManager",
-            "esri/tasks/QueryTask",
-            "esri/tasks/support/Query",
             "esri/rest/networks/trace",
             "esri/rest/networks/support/TraceLocation",
             "esri/rest/networks/support/TraceResult",
@@ -309,8 +318,6 @@
             UtilityNetworkClass,
             TerminalClass,
             identityManagerClass,
-            QueryTaskClass, 
-            QueryClass,
             TracerClass,
             TraceLocationClass,
             TraceResultClass,
@@ -328,9 +335,7 @@
             MapView = MapViewClass;
             UtilityNetwork = UtilityNetworkClass;
             Terminal = TerminalClass;
-            identityManager = identityManagerClass;
-            QueryTask = QueryTaskClass;
-            Query = QueryClass;
+            identityManager = identityManagerClass; 
             Tracer = TracerClass;
             TraceLocation = TraceLocationClass;
             TraceResult = TraceResultClass;
@@ -489,6 +494,19 @@
                 });
     
     }
+
+    //function to deal with case sensitive fields 
+    let getVal = function(obj, prop) {
+        prop = (prop + "").toLowerCase();
+        for (var p in obj) {
+            if (obj.hasOwnProperty(p) && prop == (p + "").toLowerCase()) {
+                return obj[p];
+                break;
+            }
+        }
+        return undefined;
+    }
+
      
         </script>
 
