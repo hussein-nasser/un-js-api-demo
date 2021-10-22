@@ -1,3 +1,4 @@
+<!-- Script updated for 4.21, ability to override trace configuration -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,8 +6,8 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
      
-    <link rel="stylesheet" href="https://js.arcgis.com/4.20/esri/themes/light/main.css">
-    <script src="https://js.arcgis.com/4.20/"></script>
+    <link rel="stylesheet" href="https://js.arcgis.com/4.21/esri/themes/light/main.css">
+    <script src="https://js.arcgis.com/4.21/"></script>
   
     <style type="text/css" media="screen">
     html,     body {
@@ -42,6 +43,7 @@
         <td> <button id = 'btnTrace' >Trace</button> </td>
         <td> <button id = 'btnViewAssociation' >View Associations</button> </td>
         <td> <button id = 'btnClear' >Clear</button> </td>
+        <td>  <div style = 'color:brown'><input  id = 'chkHighlight' type = 'checkbox'  >Highlight</div> </td>
     </tr></table>
  
     <script>
@@ -62,6 +64,7 @@
         let     Association;
         let     SynthetizeAssociationGeometries;
         let     SynthetizeAssociationGeometriesParameters;
+        let     UNTraceConfiguration;
 
         /* Globals */
         const CONNECTIVITY_ASSOCIATION_COLOR = [29, 235, 70, 0.4];
@@ -92,6 +95,7 @@
         const btnViewAssociation = document.getElementById("btnViewAssociation")
         const btnClear = document.getElementById("btnClear")
         const divOutput =  document.getElementById("divOutput")
+        const chkHighlight = document.getElementById("chkHighlight")
 
         /* Control Events Setup */
         btnViewAssociation.addEventListener("click", handler_ViewAssociations)        
@@ -209,15 +213,37 @@
             //get the selected trace configuration from the drop down (globalId)
             const selectedTraceConfigurationGlobalId = cmbTraceConfig.options[cmbTraceConfig.selectedIndex].value;
             
-            //build the trace parameters, add the traceLocations and the named trace configuration from the drop down
-            const traceParameters = new TraceParameters (
-                                      { "traceLocations": Array.from(traceLocations),
-                                         "namedTraceConfigurationGlobalId":  selectedTraceConfigurationGlobalId 
-                                         } )
+            //if asked to highlight, than pull trace configuration and override it to always return geometry
+            //only in 4.21 
+            let inputTraceParams =    { "traceLocations": Array.from(traceLocations)   }
+            if (chkHighlight.checked) {
+                const tc = utilityNetwork.sharedNamedTraceConfigurations.find(tc => tc.globalId === selectedTraceConfigurationGlobalId)
+                const mytc = new UNTraceConfiguration(tc.traceConfiguration.toJSON());
+                inputTraceParams.traceConfiguration = mytc;
+                inputTraceParams.traceType = tc.traceType;
+                const resultTypes = tc.resultTypes;
+                //inherit the result type of trace configuration and add geometry to it.
+                if (!resultTypes.find(r => r.type === "aggregatedGeometry")) {
+                    resultTypes.push( {
+                                            "type": "aggregatedGeometry",
+                                            "includeGeometry": false,
+                                            "includePropagatedValues": false,
+                                            "networkAttributeNames": [],
+                                            "diagramTemplateName": "",
+                                            "resultTypeFields": []
+                                        })
+                }
+                inputTraceParams.resultTypes = resultTypes;
+                
+            }
+            else
+                inputTraceParams.namedTraceConfigurationGlobalId = selectedTraceConfigurationGlobalId
             
+            //build the trace parameters, add the traceLocations and the named trace configuration from the drop down
+            const traceParameters = new TraceParameters ( inputTraceParams )
             //Execute the trace 
             const traceResult = await Tracer.trace(utilityNetwork.networkServiceUrl, traceParameters);
-        
+            
             //Delete any existing trace results (we tag the trace result graphic as "TraceResult" so we can delete it easily)
             //alternatively we could have used a graphic layer
             const index = view.graphics.findIndex(g => g.name === "TraceResult")
@@ -311,8 +337,9 @@
             "esri/geometry/projection",
             "esri/rest/networks/support/Association",
             "esri/rest/networks/synthesizeAssociationGeometries",
-            "esri/rest/networks/support/SynthesizeAssociationGeometriesParameters"
-    
+            "esri/rest/networks/support/SynthesizeAssociationGeometriesParameters",
+            "esri/networks/support/UNTraceConfiguration"
+
         ],     function(
             WebMapClass,
             MapViewClass,
@@ -330,7 +357,8 @@
             ProjectionClass,
             AssociationClass,
             SynthetizeAssociationGeometriesClass,
-            SynthetizeAssociationGeometriesParametersClass
+            SynthetizeAssociationGeometriesParametersClass,
+            UNTraceConfigurationClass
         ) {
             WebMap = WebMapClass;
             MapView = MapViewClass;
@@ -349,6 +377,7 @@
             Association = AssociationClass;
             SynthetizeAssociationGeometries = SynthetizeAssociationGeometriesClass;
             SynthetizeAssociationGeometriesParameters = SynthetizeAssociationGeometriesParametersClass;
+            UNTraceConfiguration = UNTraceConfigurationClass;
             init()
         }
         );
